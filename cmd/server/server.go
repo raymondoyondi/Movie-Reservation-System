@@ -1,89 +1,123 @@
 package server
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"os"
-	"os/signal"
-	"time"
 
 	"github.com/go-kit/kit/log"
+	"github.com/spf13/cobra"
+	"gorm.io/driver/mysql"
+	"gorm.io/gorm"
 
 	"github.com/raymondoyondi/Movie-Reservation-System/internal/router"
+	"github.com/raymondoyondi/Movie-Reservation-System/internal/server"
 	"github.com/raymondoyondi/Movie-Reservation-System/internal/workgroup"
+	"github.com/raymondoyondi/Movie-Reservation-System/pkgs/models"
 )
 
-type Route struct {
-	Method  string
-	Path    string
-	Handler http.Handler
+type CMD struct {
+	RootCmd *cobra.Command
+	Logger  log.Logger
 }
 
-type Input struct {
-	Port            int
-	Router          router.Router
-	Logger          log.Logger
-	NotFoundHandler http.Handler
-	ServerDrainTime int
-	Routes          []Route
-	WrapHandlers    []func(next http.Handler) http.Handler
+type Server struct {
+	Config *Config
+	Logger log.Logger
+	Name   string
+	Router router.Router
+	Routes []server.Route
+	Db     *gorm.DB
 }
 
-type HttpServer struct {
-	*Input
+type Config struct {
+	HTTPPort        int     `json:"http_port" usage:"server http port number"`
+	HTTPSPort       int     `json:"https_port" usage:"server https port number"`
+	ServerDrainTime int     `json:"server_drain_time" usage:"number of seconds needed for server to shutdown"`
+	Debug           float64 `json:"debug" usage:"enable pprof to debug" required:"true"`
 }
 
-func CreateServer(group *workgroup.Group, inp *Input) error {
-	hSever := &HttpServer{Input: inp}
-	hSever.SetupRoutes()
-	server := &http.Server{Addr: ":" + fmt.Sprint(inp.Port), Handler: hSever.Router}
+var (
+	apiServer = &Server{
+		Config: &Config{
+			HTTPPort:        4000,
+			ServerDrainTime: 2,
+		},
+		Name:   "APIServer",
+		Router: router.CreateRouter("httprouter"),
+	}
 
-	group.Add(func(stop <-chan struct{}) error {
-		go hSever.ShutDownServer(server, stop)
-		err := server.ListenAndServe()
-		if err != nil {
-			_ = hSever.Logger.Log("Error", "ListenAndServe", "Error", err.Error())
-		}
+	serverCmd = &cobra.Command{
+		Use:   "server",
+		Short: "Start API Server",
+		Long:  "",
+		Run:   startServer,
+	}
+)
+
+func Init(cmd *CMD) {
+	cmd.RootCmd.AddCommand(serverCmd)
+	apiServer.initLogger(cmd.Logger)
+}
+
+func (s *Server) initLogger(logger log.Logger) {
+	s.Logger = log.With(logger, "app", s.Name)
+}
+
+func startServer(_ *cobra.Command, _ []string) {
+	err := apiServer.dbInit()
+	if err != nil {
+		_ = apiServer.Logger.Log("Error", err.Error(), "Exiting", "...")
+		os.Exit(1)
+	}
+
+	apiServer.setupRoutes()
+	err = apiServer.runServer(defaultHandler(""))
+	if err != nil {
+		_ = apiServer.Logger.Log("Error", err.Error(), "Exiting", "...")
+		os.Exit(1)
+	}
+}
+
+func (s *Server) dbInit() error {
+	// TODO: Move to CLI Arguments
+	dsn := "user:user@tcp(db:3306)/ticketing?charset=utf8mb4&parseTime=True&loc=Local"
+	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
+	if err != nil {
+		fmt.Println("error connecting to DB: ", err.Error())
+		os.Exit(1)
+	}
+	s.Db = db
+	return db.AutoMigrate(&models.Booking{},
+		&models.BookingSeat{},
+		&models.Movie{},
+		&models.MovieShow{},
+		&models.User{},
+		&models.City{},
+		&models.Cinema{},
+		&models.CinemaScreen{},
+		&models.CinemaSeat{},
+	)
+
+}
+
+func (s *Server) runServer(handler http.Handler) error {
+	var group workgroup.Group
+
+	err := server.CreateServer(&group, &server.Input{
+		Port:            s.Config.HTTPPort,
+		Router:          s.Router,
+		Logger:          s.Logger,
+		NotFoundHandler: handler,
+		ServerDrainTime: s.Config.ServerDrainTime,
+		Routes:          s.Routes,
+	})
+
+	if err != nil {
 		return err
-	})
+	}
 
-	group.Add(func(stop <-chan struct{}) error {
-		sigChannel := make(chan os.Signal, 1)
-		signal.Notify(sigChannel, os.Interrupt)
-
-		<-sigChannel
-		return fmt.Errorf("process Interupted")
-	})
-
+	_ = s.Logger.Log("Start", "Server", "App", s.Name)
+	_ = s.Logger.Log("WorkGroup", "Shutdown", "Status", group.Run())
 	return nil
-}
-
-func (hServer *HttpServer) ShutDownServer(server *http.Server, stop <-chan struct{}) {
-	<-stop
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(hServer.ServerDrainTime)*time.Second)
-
-	defer cancel()
-
-	if err := server.Shutdown(ctx); err != nil {
-		_ = hServer.Logger.Log("Shutdown", "Failed", "For", server.Addr, "Error", err.Error())
-	} else {
-		_ = hServer.Logger.Log("Shutdown", "Success", "For", server.Addr)
-	}
-}
-
-func (hServer *HttpServer) SetupRoutes() {
-	// setup routes from route map
-	for _, route := range hServer.Routes {
-		hServer.handle(route.Method, route.Path, route.Handler)
-	}
-
-	// setup not found handler if defined
-	if hServer.NotFoundHandler != nil {
-		hServer.Router.NotFound(hServer.wrapHandler(hServer.NotFoundHandler))
-	}
-}
-
-func (hServer *HttpServer) handle(method, path string, handler http.Handler) {
-	hServer.Router.Handle(method, path, hServer.wrapHandler(handler))
 }
