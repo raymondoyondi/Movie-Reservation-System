@@ -1,183 +1,96 @@
-package server_test
+package server
 
 import (
-	"fmt"
-	"math/rand"
 	"net/http"
-	"net/http/httptest"
+	"os"
 	"syscall"
 	"testing"
 	"time"
 
-	"github.com/raymondoyondi/Movie-Reservation-System/internal/workgroup"
+	"github.com/go-kit/kit/log"
 
 	"github.com/raymondoyondi/Movie-Reservation-System/internal/router"
 	"github.com/raymondoyondi/Movie-Reservation-System/internal/server"
-	"github.com/raymondoyondi/Movie-Reservation-System/internal/testhelpers"
 )
 
-func DummyHandler(status string) http.Handler {
-	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		var htmlIndex = `{ "name": "dummy", "status": "` + status + `" }`
-		_, _ = fmt.Fprintf(writer, htmlIndex)
-	})
-}
-
-func GetServerInput(withNotFoundHandler bool) *server.Input {
-
-	max, min := 60000, 30000
-	logger := testhelpers.FakeLogger()
-	serverInput := &server.Input{
-		Port:   rand.Intn(max-min) + min,
-		Router: router.CreateRouter("httprouter"),
-		Logger: logger,
-		Routes: []server.Route{
-			{"GET", "/test", DummyHandler("test")},
-			{"GET", "/test2", DummyHandler("test2")},
-		},
-		ServerDrainTime: 1,
+func TestServer_BasicRoutes(t *testing.T) {
+	type fields struct {
+		Config *Config
+		Logger log.Logger
+		Name   string
+		Router router.Router
+		Routes []server.Route
 	}
-	if withNotFoundHandler == true {
-		serverInput.NotFoundHandler = DummyHandler("NotFound")
-	}
-	return serverInput
-}
-
-func TestCreateServer(t *testing.T) {
-	t.Parallel()
-	var group workgroup.Group
-
 	type args struct {
-		group *workgroup.Group
-		inp   *server.Input
+		handler http.Handler
 	}
 	tests := []struct {
 		name    string
+		fields  fields
 		args    args
 		wantErr bool
 	}{
-		{"RunServer", args{&group, GetServerInput(false)}, false},
-	}
-
-	stop := make(chan int, 1)
-
-	for _, tt := range tests {
-		t.Run(tt.name+"Create Server", func(t *testing.T) {
-			t.Parallel()
-			if err := server.CreateServer(tt.args.group, tt.args.inp); (err != nil) != tt.wantErr {
-				t.Errorf("CreateServer() error = %v, wantErr %v", err, tt.wantErr)
-			}
-
-			_ = tt.args.group.Run()
-			stop <- 0
-
-		})
-
-		t.Run(tt.name+"Kill Server", func(t *testing.T) {
-			t.Parallel()
-			time.Sleep(time.Second * 1)
-			// send sigint to kill
-			_ = syscall.Kill(syscall.Getpid(), syscall.SIGINT)
-
-			select {
-			case <-stop:
-				t.Log("Server Stopped!")
-			case <-time.After(5 * time.Second):
-				t.Fatalf("Server did not shut down")
-			}
-		})
-	}
-}
-
-func Test_httpServer_routes(t *testing.T) {
-
-	type fields struct {
-		ServerInput *server.Input
-	}
-	tests := []struct {
-		name   string
-		fields fields
-		path   string
-		status int
-		result string
-	}{
-		{"basic routing", fields{GetServerInput(false)},
-			"/test", http.StatusOK, `{ "name": "dummy", "status": "test" }`},
-		{"routing 2", fields{GetServerInput(false)},
-			"/test2", http.StatusOK, `{ "name": "dummy", "status": "test2" }`},
-		{"routing NotFound", fields{GetServerInput(true)},
-			"/random", http.StatusOK, `{ "name": "dummy", "status": "NotFound" }`},
-		{"routing NotFound 404", fields{GetServerInput(false)},
-			"/random", http.StatusNotFound, ""},
+		{
+			name: "healthz",
+			args: args{
+				handler: defaultHandler(""),
+			},
+			wantErr: false,
+			fields: fields{
+				Config: &Config{
+					HTTPPort:        3838,
+					ServerDrainTime: 5,
+					Debug:           0,
+				},
+				Logger: log.NewLogfmtLogger(log.NewSyncWriter(os.Stdout)),
+				Name:   "APIServer",
+				Router: router.CreateRouter("httprouter"),
+			},
+		},
 	}
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			hServer := &server.HttpServer{
-				Input: tt.fields.ServerInput,
+		t.Run(tt.name+"_Server", func(t *testing.T) {
+			t.Parallel()
+			s := &Server{
+				Config: tt.fields.Config,
+				Logger: tt.fields.Logger,
+				Name:   tt.fields.Name,
+				Router: tt.fields.Router,
+				Routes: tt.fields.Routes,
 			}
-			hServer.SetupRoutes()
-			httpRouter := hServer.Router
-			req, err := http.NewRequest("GET", tt.path, nil)
+			s.setupRoutes()
+			if err := s.runServer(tt.args.handler); (err != nil) != tt.wantErr {
+				t.Errorf("runServer() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+
+		t.Run(tt.name+"_Shutdown", func(t *testing.T) {
+			t.Parallel()
+			time.Sleep(time.Second * 3)
+			defer syscall.Kill(syscall.Getpid(), syscall.SIGINT)
+		})
+
+		t.Run(tt.name+"_Request", func(t *testing.T) {
+			t.Parallel()
+			time.Sleep(time.Second * 2)
+			res, err := http.Get("http://localhost:3838/healthz")
 			if err != nil {
-				t.Fatalf(err.Error())
+				t.Error(err)
 			}
-
-			rr := httptest.NewRecorder()
-			httpRouter.ServeHTTP(rr, req)
-
-			if status := rr.Code; status != tt.status {
-				t.Errorf("handler returned wrong status code: got %v want %v",
-					status, tt.status)
-			}
-
-			if tt.result != "" {
-				expected := tt.result
-				if rr.Body.String() != expected {
-					t.Errorf("handler returned unexpected body: got %v want %v",
-						rr.Body.String(), expected)
-				}
+			if res.StatusCode != http.StatusOK {
+				t.Errorf("http request error wanted status 200, got: %d", res.StatusCode)
 			}
 		})
-	}
-}
 
-func Test_httpServer_shutDownServer(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name string
-		*server.Input
-	}{
-		{"testShutdown", GetServerInput(false)},
-	}
-	for _, tt := range tests {
-
-		hServer := &server.HttpServer{
-			Input: tt.Input,
-		}
-		server := &http.Server{Addr: ":" + fmt.Sprint(hServer.Port), Handler: hServer.Router}
-		stopAll := make(chan int, 1)
-		stop := make(chan struct{})
-
-		t.Run(tt.name+"run shutDown Server", func(t *testing.T) {
+		t.Run(tt.name+"_Request_404", func(t *testing.T) {
 			t.Parallel()
-			hServer.ShutDownServer(server, stop)
-		})
-
-		t.Run(tt.name+"run Server ListenAndServe", func(t *testing.T) {
-			t.Parallel()
-			_ = server.ListenAndServe()
-			stopAll <- 0
-		})
-
-		t.Run(tt.name+"shut down server and wait", func(t *testing.T) {
-			t.Parallel()
-			time.Sleep(time.Second * 1)
-			stop <- struct{}{}
-			select {
-			case <-stopAll:
-				t.Log("Server Stopped!")
-			case <-time.After(5 * time.Second):
-				t.Fatalf("Server did not shut down")
+			time.Sleep(time.Second * 2)
+			res, err := http.Get("http://localhost:3838/random")
+			if err != nil {
+				t.Error(err)
+			}
+			if res.StatusCode != http.StatusNotFound {
+				t.Errorf("http request error wanted status 200, got: %d", res.StatusCode)
 			}
 		})
 	}
