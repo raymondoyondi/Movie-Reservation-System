@@ -13,7 +13,7 @@ import (
 func dummyHandler(status string) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		var htmlIndex = `{ "name": "dummy", "status": "` + status + `" }`
-		_, _ = fmt.Fprintf(writer, htmlIndex)
+		_, _ = fmt.Fprint(writer, htmlIndex)
 	})
 }
 
@@ -39,7 +39,7 @@ func TestRouters_Handle(t *testing.T) {
 			httpRouter.Handle("GET", tt.path, dummyHandler(tt.name))
 			req, err := http.NewRequest("GET", "/dummy", nil)
 			if err != nil {
-				t.Fatalf(err.Error())
+				t.Fatalf(err)
 			}
 
 			rr := httptest.NewRecorder()
@@ -105,7 +105,7 @@ func TestRouters_NotFound(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			req, err := http.NewRequest("GET", tt.path, nil)
 			if err != nil {
-				t.Fatalf(err.Error())
+				t.Fatalf(err)
 			}
 
 			rr := httptest.NewRecorder()
