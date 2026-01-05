@@ -19,7 +19,7 @@ import (
 func DummyHandler(status string) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		var htmlIndex = `{ "name": "dummy", "status": "` + status + `" }`
-		_, _ = fmt.Fprintf(writer, htmlIndex)
+		_, _ = fmt.Fprintf(writer, "%s", htmlIndex)
 	})
 }
 
@@ -119,7 +119,7 @@ func Test_httpServer_routes(t *testing.T) {
 			httpRouter := hServer.Router
 			req, err := http.NewRequest("GET", tt.path, nil)
 			if err != nil {
-				t.Fatalf(err.Error())
+				t.Fatalf("%v", err)
 			}
 
 			rr := httptest.NewRecorder()
