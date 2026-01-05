@@ -1,6 +1,6 @@
 module github.com/Movie-Reservation-System/Movie-Reservation-System
 
-go 1.14
+go 1.25
 
 require (
 	github.com/go-kit/kit v0.10.0
