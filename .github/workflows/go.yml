@@ -15,11 +15,11 @@ jobs:
       mysql:
         image: mysql:8.0
         ports:
-          - 3306
+          - 3306:3306
         env:
           MYSQL_USER: user
           MYSQL_PASSWORD: user
-          MYSQL_DATABASE: ticketing_test
+          MYSQL_DATABASE: movie-reservation
           MYSQL_ROOT_PASSWORD: password
         options: --health-cmd="mysqladmin ping" --health-interval=5s --health-timeout=2s --health-retries=3
 
